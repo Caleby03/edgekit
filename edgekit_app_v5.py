@@ -4,34 +4,41 @@ import pandas as pd
 import plotly.express as px
 import numpy as np
 
-st.set_page_config(layout="wide", page_title="EdgeKit v5 - Multi-Broker Analyzer")
-st.title("📈 EdgeKit v5 - Multi-Broker Trade Analyzer")
+st.set_page_config(layout="wide", page_title="EdgeKit v5.1 - Smart Broker Analyzer")
+st.title("📈 EdgeKit v5.1 - Smart Broker Trade Analyzer")
 
-# Format detection & cleaning functions
+# Updated Webull cleaner using real file structure
 def clean_webull(df):
-    df = df.copy()
-    df = df[df["Action"].isin(["BUY", "SELL"])]
-    df["EntryTime"] = pd.to_datetime(df["Date"] + " " + df["Time"])
-    df["ExitTime"] = df["EntryTime"]  # Approximation
-    df["PnL"] = df["Net Amount"].astype(float)
-    df["Symbol"] = df["Symbol"]
-    return df[["EntryTime", "ExitTime", "PnL", "Symbol"]]
+    df = df[df["Side"].isin(["BUY", "SELL"])]
+    df["Side"] = df["Side"].str.upper()
+    df["Filled Time"] = pd.to_datetime(df["Filled Time"])
+    df["Qty"] = pd.to_numeric(df["Total Qty"], errors="coerce")
+    df["Price"] = pd.to_numeric(df["Avg Price"], errors="coerce")
 
-def clean_thinkorswim(df):
-    df = df.copy()
-    df = df[df["Type"] == "Trade"]
-    df["EntryTime"] = pd.to_datetime(df["Date"] + " " + df["Time"])
-    df["ExitTime"] = df["EntryTime"]
-    df["PnL"] = df["P/L Close"].fillna(0).astype(float)
-    df["Symbol"] = df["Symbol"]
-    return df[["EntryTime", "ExitTime", "PnL", "Symbol"]]
+    # Estimate PnL: Positive for SELL, Negative for BUY
+    df["PnL"] = df.apply(lambda row: row["Qty"] * row["Price"] * (1 if row["Side"] == "SELL" else -1), axis=1)
 
+    df.rename(columns={"Filled Time": "EntryTime"}, inplace=True)
+    df["ExitTime"] = df["EntryTime"]  # Approximate
+
+    df = df[["EntryTime", "ExitTime", "PnL", "Symbol"]]
+    return df.dropna()
+
+# Robinhood cleaner
 def clean_robinhood(df):
-    df = df.copy()
     df = df[df["Type"].isin(["Buy", "Sell"])]
     df["EntryTime"] = pd.to_datetime(df["Date"])
     df["ExitTime"] = df["EntryTime"]
     df["PnL"] = df.get("Total Return", pd.Series(0)).fillna(0).astype(float)
+    df["Symbol"] = df["Symbol"]
+    return df[["EntryTime", "ExitTime", "PnL", "Symbol"]]
+
+# ThinkorSwim cleaner
+def clean_thinkorswim(df):
+    df = df[df["Type"] == "Trade"]
+    df["EntryTime"] = pd.to_datetime(df["Date"] + " " + df["Time"])
+    df["ExitTime"] = df["EntryTime"]
+    df["PnL"] = df["P/L Close"].fillna(0).astype(float)
     df["Symbol"] = df["Symbol"]
     return df[["EntryTime", "ExitTime", "PnL", "Symbol"]]
 
@@ -47,7 +54,6 @@ def enrich(df):
     df["Drawdown"] = df["CumulativePnL"] - df["CumulativePnL"].cummax()
     return df
 
-# Upload & select broker
 upload = st.file_uploader("📤 Upload your trade CSV", type=["csv"])
 broker = st.selectbox("Broker Format", ["Webull", "Robinhood", "ThinkorSwim"])
 
@@ -67,7 +73,6 @@ if upload:
 
         df = enrich(df)
 
-        # Filters
         with st.sidebar:
             st.header("Filter")
             symbols = df['Symbol'].unique().tolist()
