@@ -1,30 +1,43 @@
 
+from datetime import datetime
+import pandas as pd
+
+def format_hour_label(hour):
+    if pd.isna(hour):
+        return "Unknown"
+    hour = int(hour)
+    return datetime.strptime(str(hour), "%H").strftime("%-I %p")
+
+
+
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import numpy as np
 
-st.set_page_config(layout="wide", page_title="EdgeKit v5.1 - Smart Broker Analyzer")
-st.title("📈 EdgeKit v5.1 - Smart Broker Trade Analyzer")
+st.set_page_config(layout="wide", page_title="EdgeKit v5.1 FIXED")
+st.title("📈 EdgeKit v5.1 (Fixed Webull Parser)")
 
-# Updated Webull cleaner using real file structure
 def clean_webull(df):
+    df = df[df["Status"] == "Filled"]
     df = df[df["Side"].isin(["BUY", "SELL"])]
+
     df["Side"] = df["Side"].str.upper()
-    df["Filled Time"] = pd.to_datetime(df["Filled Time"])
+    df["Filled Time"] = pd.to_datetime(df["Filled Time"], errors='coerce')
+
+    # Strip @ symbol
+    df["Avg Price"] = df["Avg Price"].astype(str).str.replace("@", "", regex=False)
+    df["Avg Price"] = pd.to_numeric(df["Avg Price"], errors="coerce")
     df["Qty"] = pd.to_numeric(df["Total Qty"], errors="coerce")
-    df["Price"] = pd.to_numeric(df["Avg Price"], errors="coerce")
 
-    # Estimate PnL: Positive for SELL, Negative for BUY
-    df["PnL"] = df.apply(lambda row: row["Qty"] * row["Price"] * (1 if row["Side"] == "SELL" else -1), axis=1)
-
-    df.rename(columns={"Filled Time": "EntryTime"}, inplace=True)
-    df["ExitTime"] = df["EntryTime"]  # Approximate
+    df["PnL"] = df.apply(lambda row: row["Qty"] * row["Avg Price"] * (1 if row["Side"] == "SELL" else -1), axis=1)
+    df["EntryTime"] = df["Filled Time"]
+    df["ExitTime"] = df["EntryTime"]
+    df["Symbol"] = df["Symbol"]
 
     df = df[["EntryTime", "ExitTime", "PnL", "Symbol"]]
     return df.dropna()
 
-# Robinhood cleaner
 def clean_robinhood(df):
     df = df[df["Type"].isin(["Buy", "Sell"])]
     df["EntryTime"] = pd.to_datetime(df["Date"])
@@ -33,7 +46,6 @@ def clean_robinhood(df):
     df["Symbol"] = df["Symbol"]
     return df[["EntryTime", "ExitTime", "PnL", "Symbol"]]
 
-# ThinkorSwim cleaner
 def clean_thinkorswim(df):
     df = df[df["Type"] == "Trade"]
     df["EntryTime"] = pd.to_datetime(df["Date"] + " " + df["Time"])
