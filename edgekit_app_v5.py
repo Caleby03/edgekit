@@ -1,6 +1,8 @@
 
-from datetime import datetime
+import streamlit as st
 import pandas as pd
+import plotly.express as px
+from datetime import datetime
 
 def format_hour_label(hour):
     if pd.isna(hour):
@@ -8,117 +10,56 @@ def format_hour_label(hour):
     hour = int(hour)
     return datetime.strptime(str(hour), "%H").strftime("%-I %p")
 
-
-
-import streamlit as st
-import pandas as pd
-import plotly.express as px
-import numpy as np
-
-st.set_page_config(layout="wide", page_title="EdgeKit v5.1 FIXED")
-st.title("📈 EdgeKit v5.1 (Fixed Webull Parser)")
-
 def clean_webull(df):
-    df = df[df["Status"] == "Filled"]
-    df = df[df["Side"].isin(["BUY", "SELL"])]
-
-    df["Side"] = df["Side"].str.upper()
-    df["Filled Time"] = pd.to_datetime(df["Filled Time"], errors='coerce')
-
-    # Strip @ symbol
-    df["Avg Price"] = df["Avg Price"].astype(str).str.replace("@", "", regex=False)
+    df = df.applymap(lambda x: x.replace("@", "") if isinstance(x, str) else x)
+    df["Price"] = pd.to_numeric(df["Price"], errors="coerce")
     df["Avg Price"] = pd.to_numeric(df["Avg Price"], errors="coerce")
-    df["Qty"] = pd.to_numeric(df["Total Qty"], errors="coerce")
-
-    df["PnL"] = df.apply(lambda row: row["Qty"] * row["Avg Price"] * (1 if row["Side"] == "SELL" else -1), axis=1)
-    df["EntryTime"] = df["Filled Time"]
-    df["ExitTime"] = df["EntryTime"]
-    df["Symbol"] = df["Symbol"]
-
-    df = df[["EntryTime", "ExitTime", "PnL", "Symbol"]]
-    return df.dropna()
-
-def clean_robinhood(df):
-    df = df[df["Type"].isin(["Buy", "Sell"])]
-    df["EntryTime"] = pd.to_datetime(df["Date"])
-    df["ExitTime"] = df["EntryTime"]
-    df["PnL"] = df.get("Total Return", pd.Series(0)).fillna(0).astype(float)
-    df["Symbol"] = df["Symbol"]
-    return df[["EntryTime", "ExitTime", "PnL", "Symbol"]]
-
-def clean_thinkorswim(df):
-    df = df[df["Type"] == "Trade"]
-    df["EntryTime"] = pd.to_datetime(df["Date"] + " " + df["Time"])
-    df["ExitTime"] = df["EntryTime"]
-    df["PnL"] = df["P/L Close"].fillna(0).astype(float)
-    df["Symbol"] = df["Symbol"]
-    return df[["EntryTime", "ExitTime", "PnL", "Symbol"]]
-
-@st.cache_data
-def enrich(df):
-    df["DayOfWeek"] = df["EntryTime"].dt.day_name()
-    df["HourOfDay"] = df["EntryTime"].dt.hour
-    df["DurationMinutes"] = (df["ExitTime"] - df["EntryTime"]).dt.total_seconds() / 60
-    df["IsWin"] = df["PnL"] > 0
-    df["IsLoss"] = df["PnL"] < 0
-    df["RiskReward"] = np.where(df["IsLoss"], np.nan, df["PnL"] / df["PnL"][df["PnL"] < 0].mean())
-    df["CumulativePnL"] = df["PnL"].cumsum()
-    df["Drawdown"] = df["CumulativePnL"] - df["CumulativePnL"].cummax()
+    df["Filled Time"] = pd.to_datetime(df["Filled Time"], format="%m/%d/%Y %H:%M:%S EST", errors="coerce")
+    df = df[df["Status"] == "Filled"]
+    df = df.dropna(subset=["Price", "Filled Time", "Symbol", "Side"])
+    df["Filled Date"] = df["Filled Time"].dt.date
+    df["Hour"] = df["Filled Time"].dt.hour
+    df["Hour Label"] = df["Hour"].apply(format_hour_label)
+    df["Day"] = df["Filled Time"].dt.day_name()
+    df["PnL"] = df["Price"] * df["Filled"]
     return df
 
-upload = st.file_uploader("📤 Upload your trade CSV", type=["csv"])
-broker = st.selectbox("Broker Format", ["Webull", "Robinhood", "ThinkorSwim"])
+def main():
+    st.set_page_config(page_title="EdgeKit Trade Analyzer", layout="wide")
+    st.title("📊 EdgeKit Trade Journal Analyzer")
 
-if upload:
-    try:
-        raw = pd.read_csv(upload)
+    uploaded_file = st.file_uploader("Upload your trade CSV file", type=["csv"])
+    if not uploaded_file:
+        st.info("Please upload a CSV file to get started.")
+        return
 
-        if broker == "Webull":
-            df = clean_webull(raw)
-        elif broker == "Robinhood":
-            df = clean_robinhood(raw)
-        elif broker == "ThinkorSwim":
-            df = clean_thinkorswim(raw)
-        else:
-            st.error("Unsupported broker.")
-            st.stop()
+    broker = st.selectbox("Select your broker:", ["Webull", "Robinhood", "ThinkorSwim"])
+    df = pd.read_csv(uploaded_file)
 
-        df = enrich(df)
+    if broker == "Webull":
+        df = clean_webull(df)
+    else:
+        st.error("Only Webull support is available in this build.")
+        return
 
-        with st.sidebar:
-            st.header("Filter")
-            symbols = df['Symbol'].unique().tolist()
-            selected_symbols = st.multiselect("Symbols", symbols, default=symbols)
-            days = df['DayOfWeek'].unique().tolist()
-            selected_days = st.multiselect("Days of Week", days, default=days)
-            hour_min, hour_max = st.slider("Hour Range", 0, 23, (0, 23))
+    st.subheader("Filtered Trade Log")
+    st.dataframe(df)
 
-        filtered = df[
-            df['Symbol'].isin(selected_symbols) &
-            df['DayOfWeek'].isin(selected_days) &
-            df['HourOfDay'].between(hour_min, hour_max)
-        ]
+    st.subheader("Total PnL by Symbol")
+    pnl_by_symbol = df.groupby("Symbol")["PnL"].sum().reset_index()
+    st.plotly_chart(px.bar(pnl_by_symbol, x="Symbol", y="PnL", title="PnL by Symbol"))
 
-        st.markdown("## 📊 Performance Charts")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.plotly_chart(px.bar(filtered.groupby('DayOfWeek')['PnL'].sum().reset_index(), x='DayOfWeek', y='PnL', title="PnL by Day of Week"), use_container_width=True)
-            st.plotly_chart(px.histogram(filtered, x='DurationMinutes', nbins=30, title="Trade Duration (Minutes)"), use_container_width=True)
-            st.plotly_chart(px.bar(filtered.groupby('Symbol')['RiskReward'].mean(numeric_only=True).dropna().reset_index(), x='Symbol', y='RiskReward', title='Risk-Reward Ratio'), use_container_width=True)
-        with col2:
-            st.plotly_chart(px.bar(filtered.groupby('HourOfDay')['PnL'].sum().reset_index(), x='HourOfDay', y='PnL', title="PnL by Hour"), use_container_width=True)
-            st.plotly_chart(px.bar(filtered.groupby('DayOfWeek')['IsWin'].mean().reset_index(), x='DayOfWeek', y='IsWin', title="Win Rate by Day"), use_container_width=True)
-            st.plotly_chart(px.area(filtered, x='ExitTime', y='Drawdown', title="Max Drawdown Over Time"), use_container_width=True)
+    st.subheader("Trades by Day of Week")
+    trades_by_day = df["Day"].value_counts().sort_index()
+    st.plotly_chart(px.bar(x=trades_by_day.index, y=trades_by_day.values,
+                           labels={"x": "Day", "y": "Trades"},
+                           title="Trades by Day"))
 
-        st.plotly_chart(px.histogram(filtered, x='PnL', nbins=50, title="PnL Distribution per Trade"), use_container_width=True)
+    st.subheader("Trades by Hour")
+    trades_by_hour = df["Hour Label"].value_counts().sort_index()
+    st.plotly_chart(px.bar(x=trades_by_hour.index, y=trades_by_hour.values,
+                           labels={"x": "Hour", "y": "Trades"},
+                           title="Trades by Hour"))
 
-        win_loss = filtered['IsWin'].value_counts().rename(index={True: 'Win', False: 'Loss'})
-        st.plotly_chart(px.pie(values=win_loss.values, names=win_loss.index, title="Win vs Loss Split"), use_container_width=True)
-
-        st.markdown("## 🧾 Trade Log")
-        st.dataframe(filtered, use_container_width=True)
-
-    except Exception as e:
-        st.error(f"❌ Error processing file: {e}")
-else:
-    st.info("👆 Upload a CSV and select your broker to begin.")
+if __name__ == "__main__":
+    main()
